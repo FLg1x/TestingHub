@@ -535,7 +535,3 @@ player:GetPropertyChangedSignal("Character"):Connect(function()
         stopStrafe()
     end
 end)
-
-print("Target Strafe загружен! Нажмите RightAlt для открытия.")
-
--- Made By DeepSeek
