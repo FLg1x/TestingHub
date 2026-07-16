@@ -1,19 +1,13 @@
--- я крутой
-
 local player = game.Players.LocalPlayer
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "FokiHubGUI"
-screenGui.Parent = player:WaitForChild("PlayerGui")
-screenGui.ResetOnSpawn = false
+local mouse = player:GetMouse()
+local camera = workspace.CurrentCamera
 
 local settings = {
-
     AimbotEnabled = false,
     SilentAim = false,
     VisibleCheck = false,
     FOVRadius = 120,
     Smoothness = 5,
-
     ESPEnabled = false,
     ESPBoxes = false,
     ESPHealth = false,
@@ -21,7 +15,6 @@ local settings = {
     ESPDistance = false,
     ESPTracers = false,
     ESPMaxDistance = 200,
-
     StrafeEnabled = false,
     StrafeDistance = 5,
     StrafeSpeed = 16,
@@ -29,6 +22,213 @@ local settings = {
     StrafeMode = "Nearest",
     StrafeTarget = ""
 }
+
+local function isVisible(targetPart)
+    if not targetPart then return false end
+    local origin = camera.CFrame.Position
+    local direction = (targetPart.Position - origin).Unit
+    local ray = Ray.new(origin, direction * (targetPart.Position - origin).Magnitude)
+    local hit = workspace:FindPartOnRay(ray, player.Character)
+    return hit == targetPart or (hit and hit:IsDescendantOf(targetPart.Parent))
+end
+
+local function getScreenPosition(targetPart)
+    if not targetPart then return nil end
+    local screenPos, onScreen = camera:WorldToScreenPoint(targetPart.Position)
+    if onScreen then
+        return Vector2.new(screenPos.X, screenPos.Y)
+    end
+    return nil
+end
+
+local function getClosestPlayer()
+    local character = player.Character
+    if not character then return nil end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return nil end
+    
+    local closest, closestDist = nil, math.huge
+    local mousePos = Vector2.new(mouse.X, mouse.Y)
+    
+    for _, plr in pairs(game.Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local targetRoot = plr.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                local screenPos = getScreenPosition(targetRoot)
+                if screenPos then
+                    local dist = (mousePos - screenPos).Magnitude
+                    if dist < settings.FOVRadius and dist < closestDist then
+                        closestDist = dist
+                        closest = plr
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local aimbotTarget = nil
+
+local function updateAimbot()
+    if not settings.AimbotEnabled then
+        aimbotTarget = nil
+        return
+    end
+    
+    local target = getClosestPlayer()
+    if target then
+        aimbotTarget = target
+        local targetPart = target.Character:FindFirstChild("Head")
+        if targetPart and (not settings.VisibleCheck or isVisible(targetPart)) then
+            local screenPos = getScreenPosition(targetPart)
+            if screenPos then
+                local mousePos = Vector2.new(mouse.X, mouse.Y)
+                local newPos = mousePos:Lerp(screenPos, settings.Smoothness / 10)
+                mousemoverel(newPos.X - mouse.X, newPos.Y - mouse.Y)
+            end
+        end
+    else
+        aimbotTarget = nil
+    end
+end
+
+local espObjects = {}
+
+local function createESP(plr)
+    if not plr or not plr.Character then return end
+    if espObjects[plr] then return end
+    
+    local character = plr.Character
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESP_Highlight"
+    highlight.Adornee = character
+    highlight.FillColor = Color3.fromRGB(255, 0, 0)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.OutlineTransparency = 0.2
+    highlight.Parent = character
+    
+    espObjects[plr] = highlight
+end
+
+local function removeESP(plr)
+    if espObjects[plr] then
+        espObjects[plr]:Destroy()
+        espObjects[plr] = nil
+    end
+end
+
+local function updateESP()
+    for _, plr in pairs(game.Players:GetPlayers()) do
+        if plr ~= player then
+            if settings.ESPEnabled then
+                createESP(plr)
+            else
+                removeESP(plr)
+            end
+        end
+    end
+end
+
+local strafeLoop = nil
+local isStrafing = false
+
+local function getStrafeTarget()
+    if settings.StrafeMode == "Nearest" then
+        local nearest, minDist = nil, math.huge
+        local character = player.Character
+        if not character then return nil end
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if not rootPart then return nil end
+        
+        for _, plr in pairs(game.Players:GetPlayers()) do
+            if plr ~= player and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+                local dist = (rootPart.Position - plr.Character.HumanoidRootPart.Position).Magnitude
+                if dist < minDist then
+                    minDist = dist
+                    nearest = plr
+                end
+            end
+        end
+        return nearest
+    else
+        if settings.StrafeTarget == "" then return nil end
+        for _, plr in pairs(game.Players:GetPlayers()) do
+            if plr ~= player and plr.Character then
+                local name = string.lower(plr.Name)
+                if string.sub(name, 1, 1) == settings.StrafeTarget then
+                    return plr
+                end
+            end
+        end
+        return nil
+    end
+end
+
+local function startStrafe()
+    if isStrafing then return end
+    isStrafing = true
+    
+    local character = player.Character
+    if not character then return end
+    local humanoid = character:FindFirstChild("Humanoid")
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not rootPart then return end
+    
+    humanoid.WalkSpeed = settings.StrafeSpeed
+    
+    strafeLoop = game:GetService("RunService").Heartbeat:Connect(function()
+        if not settings.StrafeEnabled then
+            stopStrafe()
+            return
+        end
+        
+        local target = getStrafeTarget()
+        if target and target.Character then
+            local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot then
+                local direction = (rootPart.Position - targetRoot.Position).Unit
+                local cross = Vector3.new(-direction.Z, 0, direction.X)
+                local targetPos = targetRoot.Position + (direction * settings.StrafeDistance) + (cross * 3 * math.sin(os.clock() * settings.StrafeRotation))
+                targetPos = targetRoot.Position + (targetPos - targetRoot.Position).Unit * settings.StrafeDistance
+                
+                local moveDirection = (targetPos - rootPart.Position).Unit
+                humanoid:MoveTo(rootPart.Position + moveDirection * 10)
+                
+                local lookAt = targetRoot.Position - rootPart.Position
+                lookAt = Vector3.new(lookAt.X, 0, lookAt.Z)
+                if lookAt.Magnitude > 0.5 then
+                    rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + lookAt)
+                end
+            end
+        end
+    end)
+end
+
+local function stopStrafe()
+    isStrafing = false
+    if strafeLoop then
+        strafeLoop:Disconnect()
+        strafeLoop = nil
+    end
+    local character = player.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if humanoid then
+            humanoid.WalkSpeed = 16
+        end
+        if rootPart then
+            humanoid:MoveTo(rootPart.Position)
+        end
+    end
+end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FokiHubGUI"
+screenGui.Parent = player:WaitForChild("PlayerGui")
+screenGui.ResetOnSpawn = false
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 450, 0, 550)
@@ -200,6 +400,13 @@ local function createToggle(parent, yPos, labelText, settingKey)
         settings[settingKey] = not settings[settingKey]
         btn.BackgroundColor3 = settings[settingKey] and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(60, 60, 80)
         btn.Text = settings[settingKey] and "ON" or "OFF"
+        if settingKey == "StrafeEnabled" then
+            if settings.StrafeEnabled then
+                startStrafe()
+            else
+                stopStrafe()
+            end
+        end
     end)
     
     return btn
@@ -263,6 +470,13 @@ local function createSlider(parent, yPos, labelText, minVal, maxVal, settingKey)
             settings[settingKey] = num
             valueLabel.Text = tostring(num)
             slider.Text = tostring(num)
+            if settingKey == "StrafeDistance" or settingKey == "StrafeSpeed" or settingKey == "StrafeRotation" then
+                if settings.StrafeEnabled then
+                    stopStrafe()
+                    task.wait(0.1)
+                    startStrafe()
+                end
+            end
         else
             slider.Text = tostring(settings[settingKey])
         end
@@ -381,6 +595,11 @@ modeBtn.MouseButton1Click:Connect(function()
         modeBtn.Text = "Nearest"
         modeLabel.Text = "Mode: Nearest"
     end
+    if settings.StrafeEnabled then
+        stopStrafe()
+        task.wait(0.1)
+        startStrafe()
+    end
 end)
 
 local targetInput = Instance.new("TextBox")
@@ -409,6 +628,16 @@ targetInput:GetPropertyChangedSignal("Text"):Connect(function()
     else
         settings.StrafeTarget = ""
     end
+    if settings.StrafeEnabled then
+        stopStrafe()
+        task.wait(0.1)
+        startStrafe()
+    end
+end)
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    updateAimbot()
+    updateESP()
 end)
 
 game:GetService("UserInputService").InputBegan:Connect(function(input)
@@ -420,4 +649,9 @@ game:GetService("UserInputService").InputBegan:Connect(function(input)
     end
 end)
 
-print ("okay it's done")
+player.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if settings.StrafeEnabled then
+        startStrafe()
+    end
+end)
