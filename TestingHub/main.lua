@@ -3,156 +3,33 @@ local mouse = player:GetMouse()
 local camera = workspace.CurrentCamera
 local runService = game:GetService("RunService")
 local userInputService = game:GetService("UserInputService")
-
--- tuff
+local players = game:GetService("Players")
 
 local settings = {
-    AimbotEnabled = false,
-    SilentAim = false,
-    VisibleCheck = false,
-    FOVRadius = 120,
-    Smoothness = 5,
-    ESPEnabled = false,
-    ESPBoxes = false,
-    ESPHealth = false,
-    ESPNames = false,
-    ESPDistance = false,
-    ESPTracers = false,
-    ESPMaxDistance = 200,
-    StrafeEnabled = false,
-    StrafeDistance = 5,
-    StrafeSpeed = 16,
-    StrafeRotation = 2,
-    StrafeMode = "Nearest",
-    StrafeTarget = ""
+    Enabled = false,
+    Method = "BodyVelocity",
+    Distance = 5,
+    Speed = 16,
+    RotationSpeed = 2,
+    Mode = "Nearest",
+    TargetLetter = ""
 }
 
-local espObjects = {}
-local aimbotTarget = nil
 local strafeLoop = nil
 local isStrafing = false
-
-local function isVisible(targetPart)
-    if not targetPart then return false end
-    local origin = camera.CFrame.Position
-    local direction = (targetPart.Position - origin).Unit
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    raycastParams.FilterDescendantsInstances = {player.Character}
-    local result = workspace:Raycast(origin, direction * 500, raycastParams)
-    if result then
-        local hit = result.Instance
-        if hit:IsDescendantOf(targetPart.Parent) then
-            return true
-        end
-    end
-    return false
-end
-
-local function getScreenPosition(targetPart)
-    if not targetPart then return nil end
-    local screenPos, onScreen = camera:WorldToScreenPoint(targetPart.Position)
-    if onScreen then
-        return Vector2.new(screenPos.X, screenPos.Y)
-    end
-    return nil
-end
-
-local function getClosestPlayer()
-    local character = player.Character
-    if not character then return nil end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return nil end
-
-    local closest, closestDist = nil, math.huge
-    local mousePos = Vector2.new(mouse.X, mouse.Y)
-
-    for _, plr in pairs(game.Players:GetPlayers()) do
-        if plr ~= player and plr.Character then
-            local targetRoot = plr.Character:FindFirstChild("HumanoidRootPart")
-            if targetRoot then
-                local screenPos = getScreenPosition(targetRoot)
-                if screenPos then
-                    local dist = (mousePos - screenPos).Magnitude
-                    if dist < settings.FOVRadius and dist < closestDist then
-                        closestDist = dist
-                        closest = plr
-                    end
-                end
-            end
-        end
-    end
-    return closest
-end
-
-local function updateAimbot()
-    if not settings.AimbotEnabled then
-        aimbotTarget = nil
-        return
-    end
-
-    local target = getClosestPlayer()
-    if target then
-        aimbotTarget = target
-        local targetPart = target.Character:FindFirstChild("Head")
-        if targetPart and (not settings.VisibleCheck or isVisible(targetPart)) then
-            local screenPos = getScreenPosition(targetPart)
-            if screenPos then
-                local mousePos = Vector2.new(mouse.X, mouse.Y)
-                local newPos = mousePos:Lerp(screenPos, settings.Smoothness / 10)
-                mousemoverel(newPos.X - mouse.X, newPos.Y - mouse.Y)
-            end
-        end
-    else
-        aimbotTarget = nil
-    end
-end
-
-local function createESP(plr)
-    if not plr or not plr.Character then return end
-    if espObjects[plr] then return end
-
-    local character = plr.Character
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "ESP_Highlight"
-    highlight.Adornee = character
-    highlight.FillColor = Color3.fromRGB(255, 0, 0)
-    highlight.FillTransparency = 0.5
-    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-    highlight.OutlineTransparency = 0.2
-    highlight.Parent = character
-
-    espObjects[plr] = highlight
-end
-
-local function removeESP(plr)
-    if espObjects[plr] then
-        espObjects[plr]:Destroy()
-        espObjects[plr] = nil
-    end
-end
-
-local function updateESP()
-    for _, plr in pairs(game.Players:GetPlayers()) do
-        if plr ~= player then
-            if settings.ESPEnabled then
-                createESP(plr)
-            else
-                removeESP(plr)
-            end
-        end
-    end
-end
+local noclipConnections = {}
+local isInjected = true
+local screenGui = nil
 
 local function getStrafeTarget()
-    if settings.StrafeMode == "Nearest" then
+    if settings.Mode == "Nearest" then
         local nearest, minDist = nil, math.huge
         local character = player.Character
         if not character then return nil end
         local rootPart = character:FindFirstChild("HumanoidRootPart")
         if not rootPart then return nil end
 
-        for _, plr in pairs(game.Players:GetPlayers()) do
+        for _, plr in pairs(players:GetPlayers()) do
             if plr ~= player and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
                 local dist = (rootPart.Position - plr.Character.HumanoidRootPart.Position).Magnitude
                 if dist < minDist then
@@ -163,17 +40,59 @@ local function getStrafeTarget()
         end
         return nearest
     else
-        if settings.StrafeTarget == "" then return nil end
-        for _, plr in pairs(game.Players:GetPlayers()) do
+        if settings.TargetLetter == "" then return nil end
+        for _, plr in pairs(players:GetPlayers()) do
             if plr ~= player and plr.Character then
                 local name = string.lower(plr.Name)
-                if string.sub(name, 1, 1) == settings.StrafeTarget then
+                if string.sub(name, 1, 1) == settings.TargetLetter then
                     return plr
                 end
             end
         end
         return nil
     end
+end
+
+local function setupNoclip(state)
+    for _, conn in pairs(noclipConnections) do
+        conn:Disconnect()
+    end
+    noclipConnections = {}
+
+    if not state then
+        if player.Character then
+            for _, part in pairs(player.Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+        return
+    end
+
+    local function setCollision(part)
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+
+    if player.Character then
+        for _, part in pairs(player.Character:GetDescendants()) do
+            setCollision(part)
+        end
+        local conn = player.Character.DescendantAdded:Connect(setCollision)
+        table.insert(noclipConnections, conn)
+    end
+
+    local charConn = player.CharacterAdded:Connect(function(char)
+        task.wait(0.1)
+        for _, part in pairs(char:GetDescendants()) do
+            setCollision(part)
+        end
+        local conn = char.DescendantAdded:Connect(setCollision)
+        table.insert(noclipConnections, conn)
+    end)
+    table.insert(noclipConnections, charConn)
 end
 
 local function startStrafe()
@@ -186,10 +105,23 @@ local function startStrafe()
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not rootPart then return end
 
-    humanoid.WalkSpeed = settings.StrafeSpeed
+    if settings.Method == "WalkSpeed" then
+        humanoid.WalkSpeed = settings.Speed
+    end
+
+    setupNoclip(true)
+
+    local angle = 0
+    local bodyVelocity = nil
+    if settings.Method == "BodyVelocity" then
+        bodyVelocity = Instance.new("BodyVelocity")
+        bodyVelocity.MaxForce = Vector3.new(1e4, 1e4, 1e4)
+        bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+        bodyVelocity.Parent = rootPart
+    end
 
     strafeLoop = runService.Heartbeat:Connect(function()
-        if not settings.StrafeEnabled then
+        if not settings.Enabled then
             stopStrafe()
             return
         end
@@ -198,13 +130,18 @@ local function startStrafe()
         if target and target.Character then
             local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
             if targetRoot then
-                local direction = (rootPart.Position - targetRoot.Position).Unit
-                local cross = Vector3.new(-direction.Z, 0, direction.X)
-                local targetPos = targetRoot.Position + (direction * settings.StrafeDistance) + (cross * 3 * math.sin(os.clock() * settings.StrafeRotation))
-                targetPos = targetRoot.Position + (targetPos - targetRoot.Position).Unit * settings.StrafeDistance
+                local dist = settings.Distance
+                local speed = settings.RotationSpeed
+                angle = angle + speed * runService.Heartbeat:Wait()
+                local offset = Vector3.new(math.cos(angle) * dist, 0, math.sin(angle) * dist)
+                local targetPos = targetRoot.Position + offset
 
-                local moveDirection = (targetPos - rootPart.Position).Unit
-                humanoid:MoveTo(rootPart.Position + moveDirection * 10)
+                if settings.Method == "WalkSpeed" then
+                    humanoid:MoveTo(targetPos)
+                elseif settings.Method == "BodyVelocity" and bodyVelocity then
+                    local direction = (targetPos - rootPart.Position).Unit
+                    bodyVelocity.Velocity = direction * settings.Speed
+                end
 
                 local lookAt = targetRoot.Position - rootPart.Position
                 lookAt = Vector3.new(lookAt.X, 0, lookAt.Z)
@@ -222,249 +159,224 @@ local function stopStrafe()
         strafeLoop:Disconnect()
         strafeLoop = nil
     end
+    setupNoclip(false)
     local character = player.Character
     if character then
         local humanoid = character:FindFirstChild("Humanoid")
         if humanoid then
             humanoid.WalkSpeed = 16
         end
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            local bv = rootPart:FindFirstChildOfClass("BodyVelocity")
+            if bv then bv:Destroy() end
+        end
     end
 end
 
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "FokiHubGUI"
+local function unInject()
+    if not isInjected then return end
+    isInjected = false
+    stopStrafe()
+    setupNoclip(false)
+    for _, conn in pairs(noclipConnections) do
+        conn:Disconnect()
+    end
+    if screenGui then
+        screenGui:Destroy()
+        screenGui = nil
+    end
+    print("Target Strafe выгружен.")
+end
+
+screenGui = Instance.new("ScreenGui")
+screenGui.Name = "StrafeGUI"
 screenGui.Parent = player:WaitForChild("PlayerGui")
 screenGui.ResetOnSpawn = false
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 450, 0, 550)
-mainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
-mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
-mainFrame.BackgroundTransparency = 0.05
+mainFrame.Size = UDim2.new(0, 300, 0, 360)
+mainFrame.Position = UDim2.new(0.5, -150, 0.5, -180)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+mainFrame.BackgroundTransparency = 0.1
 mainFrame.BorderSizePixel = 0
-mainFrame.Visible = false
+mainFrame.Visible = true
 mainFrame.Active = true
 mainFrame.Draggable = true
 mainFrame.Parent = screenGui
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = mainFrame
+local blur = Instance.new("BlurEffect")
+blur.Size = 12
+blur.Parent = mainFrame
 
-local shadowFrame = Instance.new("Frame")
-shadowFrame.Size = UDim2.new(1, 12, 1, 12)
-shadowFrame.Position = UDim2.new(0, -6, 0, -6)
-shadowFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-shadowFrame.BackgroundTransparency = 0.6
-shadowFrame.BorderSizePixel = 0
-shadowFrame.ZIndex = 0
-shadowFrame.Parent = mainFrame
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = mainFrame
 
+local shadow = Instance.new("Frame")
+shadow.Size = UDim2.new(1, 10, 1, 10)
+shadow.Position = UDim2.new(0, -5, 0, -5)
+shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+shadow.BackgroundTransparency = 0.8
+shadow.BorderSizePixel = 0
+shadow.ZIndex = 0
+shadow.Parent = mainFrame
 local shadowCorner = Instance.new("UICorner")
-shadowCorner.CornerRadius = UDim.new(0, 12)
-shadowCorner.Parent = shadowFrame
-
-mainFrame.ZIndex = 1
-
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 45)
-titleBar.Position = UDim2.new(0, 0, 0, 0)
-titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 55)
-titleBar.BorderSizePixel = 0
-titleBar.ZIndex = 2
-titleBar.Parent = mainFrame
-
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 10)
-titleCorner.Parent = titleBar
+shadowCorner.CornerRadius = UDim.new(0, 14)
+shadowCorner.Parent = shadow
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 1, 0)
-title.Position = UDim2.new(0, 20, 0, 0)
+title.Size = UDim2.new(1, -20, 0, 30)
+title.Position = UDim2.new(0, 10, 0, 5)
 title.BackgroundTransparency = 1
-title.Text = "FOKI HUB 3.9"
+title.Text = "Target Strafe"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextScaled = true
-title.Font = Enum.Font.PlayfairDisplay
-title.FontStyle = Enum.FontStyle.Italic
-title.TextSize = 22
+title.Font = Enum.Font.SourceSansBold
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.ZIndex = 3
-title.Parent = titleBar
+title.Parent = mainFrame
 
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 30, 0, 30)
-closeBtn.Position = UDim2.new(1, -38, 0, 7)
-closeBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
-closeBtn.BorderSizePixel = 0
-closeBtn.Text = "✕"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextScaled = true
-closeBtn.Font = Enum.Font.PlayfairDisplay
-closeBtn.FontStyle = Enum.FontStyle.Italic
-closeBtn.ZIndex = 3
-closeBtn.Parent = titleBar
-
-local closeCorner = Instance.new("UICorner")
-closeCorner.CornerRadius = UDim.new(0, 6)
-closeCorner.Parent = closeBtn
-
-closeBtn.MouseButton1Click:Connect(function()
-    mainFrame.Visible = false
+local unInjectBtn = Instance.new("TextButton")
+unInjectBtn.Size = UDim2.new(0, 25, 0, 25)
+unInjectBtn.Position = UDim2.new(1, -30, 0, 5)
+unInjectBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+unInjectBtn.BorderSizePixel = 0
+unInjectBtn.Text = ""
+unInjectBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+unInjectBtn.TextScaled = true
+unInjectBtn.Font = Enum.Font.SourceSansBold
+unInjectBtn.Parent = mainFrame
+local unInjectCorner = Instance.new("UICorner")
+unInjectCorner.CornerRadius = UDim.new(1, 0)
+unInjectCorner.Parent = unInjectBtn
+unInjectBtn.MouseButton1Click:Connect(function()
+    unInject()
 end)
 
-local tabContainer = Instance.new("Frame")
-tabContainer.Size = UDim2.new(1, 0, 0, 40)
-tabContainer.Position = UDim2.new(0, 0, 0, 45)
-tabContainer.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
-tabContainer.BorderSizePixel = 0
-tabContainer.ZIndex = 2
-tabContainer.Parent = mainFrame
-
-local tabs = {"Aimbot", "Visuals", "Movement"}
-local tabButtons = {}
-local tabFrames = {}
-
-for i, tabName in ipairs(tabs) do
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1 / #tabs, -2, 1, -4)
-    btn.Position = UDim2.new((i - 1) / #tabs, 1, 0, 2)
-    btn.BackgroundColor3 = (i == 1) and Color3.fromRGB(70, 70, 200) or Color3.fromRGB(45, 45, 65)
-    btn.BorderSizePixel = 0
-    btn.Text = tabName
-    btn.TextColor3 = (i == 1) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
-    btn.TextScaled = true
-    btn.Font = Enum.Font.PlayfairDisplay
-    btn.FontStyle = Enum.FontStyle.Italic
-    btn.ZIndex = 3
-    btn.Parent = tabContainer
-
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 4)
-    btnCorner.Parent = btn
-
-    tabButtons[i] = btn
-
+local function createToggle(yPos, labelText, settingKey)
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -20, 1, -60)
-    frame.Position = UDim2.new(0, 10, 0, 90)
+    frame.Size = UDim2.new(1, -20, 0, 28)
+    frame.Position = UDim2.new(0, 10, 0, yPos)
     frame.BackgroundTransparency = 1
-    frame.Visible = (i == 1)
-    frame.ZIndex = 2
     frame.Parent = mainFrame
-    tabFrames[i] = frame
-
-    btn.MouseButton1Click:Connect(function()
-        for j, f in ipairs(tabFrames) do
-            f.Visible = (j == i)
-        end
-        for j, b in ipairs(tabButtons) do
-            b.BackgroundColor3 = (j == i) and Color3.fromRGB(70, 70, 200) or Color3.fromRGB(45, 45, 65)
-            b.TextColor3 = (j == i) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(180, 180, 180)
-        end
-    end)
-end
-
-local function createToggle(parent, yPos, labelText, settingKey)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 30)
-    frame.Position = UDim2.new(0, 0, 0, yPos)
-    frame.BackgroundTransparency = 1
-    frame.ZIndex = 3
-    frame.Parent = parent
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.7, 0, 1, 0)
+    label.Size = UDim2.new(0.65, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextColor3 = Color3.fromRGB(230, 230, 230)
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.PlayfairDisplay
-    label.FontStyle = Enum.FontStyle.Italic
-    label.TextSize = 15
-    label.ZIndex = 4
+    label.Font = Enum.Font.SourceSansItalic
+    label.TextSize = 14
     label.Parent = frame
 
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 40, 0, 22)
-    btn.Position = UDim2.new(0.85, 0, 0.5, -11)
-    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    btn.Position = UDim2.new(0.75, 0, 0.5, -11)
+    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
     btn.BorderSizePixel = 0
     btn.Text = "OFF"
     btn.TextColor3 = Color3.fromRGB(200, 200, 200)
     btn.TextScaled = true
-    btn.Font = Enum.Font.PlayfairDisplay
-    btn.FontStyle = Enum.FontStyle.Italic
-    btn.ZIndex = 4
+    btn.Font = Enum.Font.SourceSansItalic
     btn.Parent = frame
-
     local btnCorner = Instance.new("UICorner")
     btnCorner.CornerRadius = UDim.new(0, 4)
     btnCorner.Parent = btn
 
     btn.MouseButton1Click:Connect(function()
         settings[settingKey] = not settings[settingKey]
-        btn.BackgroundColor3 = settings[settingKey] and Color3.fromRGB(60, 200, 60) or Color3.fromRGB(60, 60, 80)
+        btn.BackgroundColor3 = settings[settingKey] and Color3.fromRGB(200, 200, 200) or Color3.fromRGB(60, 60, 60)
+        btn.TextColor3 = settings[settingKey] and Color3.fromRGB(0, 0, 0) or Color3.fromRGB(200, 200, 200)
         btn.Text = settings[settingKey] and "ON" or "OFF"
-        if settingKey == "StrafeEnabled" then
-            if settings.StrafeEnabled then
+        if settingKey == "Enabled" then
+            if settings.Enabled then
                 startStrafe()
             else
                 stopStrafe()
             end
         end
     end)
-
-    return btn
 end
 
-local function createSlider(parent, yPos, labelText, minVal, maxVal, settingKey)
+local function createDropdown(yPos, labelText, options, settingKey)
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 40)
-    frame.Position = UDim2.new(0, 0, 0, yPos)
+    frame.Size = UDim2.new(1, -20, 0, 28)
+    frame.Position = UDim2.new(0, 10, 0, yPos)
     frame.BackgroundTransparency = 1
-    frame.ZIndex = 3
-    frame.Parent = parent
+    frame.Parent = mainFrame
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.6, 0, 0.5, 0)
+    label.Size = UDim2.new(0.6, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(220, 220, 220)
+    label.TextColor3 = Color3.fromRGB(230, 230, 230)
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.PlayfairDisplay
-    label.FontStyle = Enum.FontStyle.Italic
+    label.Font = Enum.Font.SourceSansItalic
     label.TextSize = 14
-    label.ZIndex = 4
     label.Parent = frame
 
-    local valueLabel = Instance.new("TextLabel")
-    valueLabel.Size = UDim2.new(0.3, 0, 0.5, 0)
-    valueLabel.Position = UDim2.new(0.7, 0, 0, 0)
-    valueLabel.BackgroundTransparency = 1
-    valueLabel.Text = tostring(settings[settingKey])
-    valueLabel.TextColor3 = Color3.fromRGB(150, 200, 255)
-    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
-    valueLabel.Font = Enum.Font.PlayfairDisplay
-    valueLabel.FontStyle = Enum.FontStyle.Italic
-    valueLabel.TextSize = 14
-    valueLabel.ZIndex = 4
-    valueLabel.Parent = frame
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.35, 0, 1, -4)
+    btn.Position = UDim2.new(0.65, 0, 0, 2)
+    btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    btn.BorderSizePixel = 0
+    btn.Text = tostring(settings[settingKey])
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextScaled = true
+    btn.Font = Enum.Font.SourceSansItalic
+    btn.Parent = frame
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 4)
+    btnCorner.Parent = btn
+
+    local currentIndex = 1
+    for i, opt in ipairs(options) do
+        if opt == settings[settingKey] then
+            currentIndex = i
+            break
+        end
+    end
+    btn.MouseButton1Click:Connect(function()
+        currentIndex = currentIndex % #options + 1
+        settings[settingKey] = options[currentIndex]
+        btn.Text = tostring(options[currentIndex])
+        if settings.Enabled then
+            stopStrafe()
+            task.wait(0.1)
+            startStrafe()
+        end
+    end)
+end
+
+local function createSlider(yPos, labelText, settingKey)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -20, 0, 36)
+    frame.Position = UDim2.new(0, 10, 0, yPos)
+    frame.BackgroundTransparency = 1
+    frame.Parent = mainFrame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0.5, 0, 0.5, 0)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(230, 230, 230)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Font = Enum.Font.SourceSansItalic
+    label.TextSize = 13
+    label.Parent = frame
 
     local slider = Instance.new("TextBox")
     slider.Size = UDim2.new(0.8, 0, 0.4, 0)
     slider.Position = UDim2.new(0.1, 0, 0.5, 0)
-    slider.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+    slider.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     slider.BorderSizePixel = 0
     slider.Text = tostring(settings[settingKey])
     slider.TextColor3 = Color3.fromRGB(255, 255, 255)
-    slider.Font = Enum.Font.PlayfairDisplay
-    slider.FontStyle = Enum.FontStyle.Italic
-    slider.TextSize = 14
+    slider.Font = Enum.Font.SourceSansItalic
+    slider.TextSize = 13
     slider.ClearTextOnFocus = false
-    slider.ZIndex = 4
     slider.Parent = frame
-
     local sliderCorner = Instance.new("UICorner")
     sliderCorner.CornerRadius = UDim.new(0, 4)
     sliderCorner.Parent = slider
@@ -472,194 +384,158 @@ local function createSlider(parent, yPos, labelText, minVal, maxVal, settingKey)
     slider.FocusLost:Connect(function()
         local num = tonumber(slider.Text)
         if num then
-            num = math.clamp(num, minVal, maxVal)
             settings[settingKey] = num
-            valueLabel.Text = tostring(num)
             slider.Text = tostring(num)
-            if settingKey == "StrafeDistance" or settingKey == "StrafeSpeed" or settingKey == "StrafeRotation" then
-                if settings.StrafeEnabled then
-                    stopStrafe()
-                    task.wait(0.1)
-                    startStrafe()
-                end
+            if settings.Enabled then
+                stopStrafe()
+                task.wait(0.1)
+                startStrafe()
             end
         else
             slider.Text = tostring(settings[settingKey])
         end
     end)
-
-    return slider
 end
 
-local aimbotFrame = tabFrames[1]
+local y = 40
+createToggle(y, "Enable", "Enabled"); y = y + 35
+createDropdown(y, "Method", {"WalkSpeed", "BodyVelocity"}, "Method"); y = y + 35
+createSlider(y, "Distance", "Distance"); y = y + 45
+createSlider(y, "Speed", "Speed"); y = y + 45
+createSlider(y, "Rotation Speed", "RotationSpeed"); y = y + 45
 
-local scrollingFrame = Instance.new("ScrollingFrame")
-scrollingFrame.Size = UDim2.new(1, 0, 1, 0)
-scrollingFrame.BackgroundTransparency = 1
-scrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 220)
-scrollingFrame.ScrollBarThickness = 5
-scrollingFrame.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 100)
-scrollingFrame.ZIndex = 3
-scrollingFrame.Parent = aimbotFrame
-
-local content = Instance.new("Frame")
-content.Size = UDim2.new(1, 0, 0, 220)
-content.BackgroundTransparency = 1
-content.ZIndex = 3
-content.Parent = scrollingFrame
-
-createToggle(content, 5, "Enable Aimbot", "AimbotEnabled")
-createToggle(content, 40, "Silent Aim", "SilentAim")
-createToggle(content, 75, "Visible Check", "VisibleCheck")
-createSlider(content, 115, "FOV Radius", 0, 360, "FOVRadius")
-createSlider(content, 160, "Smoothness", 1, 20, "Smoothness")
-
-local visualsFrame = tabFrames[2]
-
-local scrollingFrame2 = Instance.new("ScrollingFrame")
-scrollingFrame2.Size = UDim2.new(1, 0, 1, 0)
-scrollingFrame2.BackgroundTransparency = 1
-scrollingFrame2.CanvasSize = UDim2.new(0, 0, 0, 280)
-scrollingFrame2.ScrollBarThickness = 5
-scrollingFrame2.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 100)
-scrollingFrame2.ZIndex = 3
-scrollingFrame2.Parent = visualsFrame
-
-local content2 = Instance.new("Frame")
-content2.Size = UDim2.new(1, 0, 0, 280)
-content2.BackgroundTransparency = 1
-content2.ZIndex = 3
-content2.Parent = scrollingFrame2
-
-createToggle(content2, 5, "Enable ESP", "ESPEnabled")
-createToggle(content2, 40, "Boxes", "ESPBoxes")
-createToggle(content2, 75, "Health Bar", "ESPHealth")
-createToggle(content2, 110, "Name Tags", "ESPNames")
-createToggle(content2, 145, "Distance", "ESPDistance")
-createToggle(content2, 180, "Tracers", "ESPTracers")
-createSlider(content2, 220, "Max Distance", 50, 500, "ESPMaxDistance")
-
-local movementFrame = tabFrames[3]
-
-local scrollingFrame3 = Instance.new("ScrollingFrame")
-scrollingFrame3.Size = UDim2.new(1, 0, 1, 0)
-scrollingFrame3.BackgroundTransparency = 1
-scrollingFrame3.CanvasSize = UDim2.new(0, 0, 0, 280)
-scrollingFrame3.ScrollBarThickness = 5
-scrollingFrame3.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 100)
-scrollingFrame3.ZIndex = 3
-scrollingFrame3.Parent = movementFrame
-
-local content3 = Instance.new("Frame")
-content3.Size = UDim2.new(1, 0, 0, 280)
-content3.BackgroundTransparency = 1
-content3.ZIndex = 3
-content3.Parent = scrollingFrame3
-
-createToggle(content3, 5, "Enable Target Strafe", "StrafeEnabled")
-createSlider(content3, 45, "Distance", 1, 20, "StrafeDistance")
-createSlider(content3, 90, "Speed", 10, 40, "StrafeSpeed")
-createSlider(content3, 135, "Rotation Speed", 1, 5, "StrafeRotation")
+local modeFrame = Instance.new("Frame")
+modeFrame.Size = UDim2.new(1, -20, 0, 30)
+modeFrame.Position = UDim2.new(0, 10, 0, y)
+modeFrame.BackgroundTransparency = 1
+modeFrame.Parent = mainFrame
 
 local modeLabel = Instance.new("TextLabel")
-modeLabel.Size = UDim2.new(0.6, 0, 0, 25)
-modeLabel.Position = UDim2.new(0, 0, 0, 180)
+modeLabel.Size = UDim2.new(0.6, 0, 1, 0)
 modeLabel.BackgroundTransparency = 1
 modeLabel.Text = "Mode: Nearest"
-modeLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+modeLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
 modeLabel.TextXAlignment = Enum.TextXAlignment.Left
-modeLabel.Font = Enum.Font.PlayfairDisplay
-modeLabel.FontStyle = Enum.FontStyle.Italic
+modeLabel.Font = Enum.Font.SourceSansItalic
 modeLabel.TextSize = 14
-modeLabel.ZIndex = 4
-modeLabel.Parent = content3
+modeLabel.Parent = modeFrame
 
 local modeBtn = Instance.new("TextButton")
-modeBtn.Size = UDim2.new(0.25, 0, 0, 25)
-modeBtn.Position = UDim2.new(0.7, 0, 0, 180)
-modeBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 200)
+modeBtn.Size = UDim2.new(0.3, 0, 1, -4)
+modeBtn.Position = UDim2.new(0.7, 0, 0, 2)
+modeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 modeBtn.BorderSizePixel = 0
 modeBtn.Text = "Nearest"
 modeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 modeBtn.TextScaled = true
-modeBtn.Font = Enum.Font.PlayfairDisplay
-modeBtn.FontStyle = Enum.FontStyle.Italic
-modeBtn.ZIndex = 4
-modeBtn.Parent = content3
-
+modeBtn.Font = Enum.Font.SourceSansItalic
+modeBtn.Parent = modeFrame
 local modeCorner = Instance.new("UICorner")
 modeCorner.CornerRadius = UDim.new(0, 4)
 modeCorner.Parent = modeBtn
-
 modeBtn.MouseButton1Click:Connect(function()
-    if settings.StrafeMode == "Nearest" then
-        settings.StrafeMode = "Target"
+    if settings.Mode == "Nearest" then
+        settings.Mode = "Target"
         modeBtn.Text = "Target"
         modeLabel.Text = "Mode: Target (enter letter)"
     else
-        settings.StrafeMode = "Nearest"
+        settings.Mode = "Nearest"
         modeBtn.Text = "Nearest"
         modeLabel.Text = "Mode: Nearest"
     end
-    if settings.StrafeEnabled then
+    if settings.Enabled then
         stopStrafe()
         task.wait(0.1)
         startStrafe()
     end
 end)
+y = y + 35
+
+local inputFrame = Instance.new("Frame")
+inputFrame.Size = UDim2.new(1, -20, 0, 30)
+inputFrame.Position = UDim2.new(0, 10, 0, y)
+inputFrame.BackgroundTransparency = 1
+inputFrame.Parent = mainFrame
 
 local targetInput = Instance.new("TextBox")
-targetInput.Size = UDim2.new(0.5, 0, 0, 25)
-targetInput.Position = UDim2.new(0.25, 0, 0, 215)
-targetInput.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+targetInput.Size = UDim2.new(0.6, 0, 1, 0)
+targetInput.Position = UDim2.new(0.2, 0, 0, 0)
+targetInput.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 targetInput.BorderSizePixel = 0
-targetInput.PlaceholderText = "First letter of name..."
+targetInput.PlaceholderText = "First letter..."
 targetInput.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
 targetInput.Text = ""
 targetInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-targetInput.Font = Enum.Font.PlayfairDisplay
-targetInput.FontStyle = Enum.FontStyle.Italic
+targetInput.Font = Enum.Font.SourceSansItalic
 targetInput.TextSize = 14
 targetInput.ClearTextOnFocus = true
-targetInput.ZIndex = 4
-targetInput.Parent = content3
-
+targetInput.Parent = inputFrame
 local inputCorner = Instance.new("UICorner")
 inputCorner.CornerRadius = UDim.new(0, 4)
 inputCorner.Parent = targetInput
-
 targetInput:GetPropertyChangedSignal("Text"):Connect(function()
     if #targetInput.Text > 0 then
-        settings.StrafeTarget = string.sub(targetInput.Text, 1, 1):lower()
+        settings.TargetLetter = string.sub(targetInput.Text, 1, 1):lower()
     else
-        settings.StrafeTarget = ""
+        settings.TargetLetter = ""
     end
-    if settings.StrafeEnabled then
+    if settings.Enabled then
         stopStrafe()
         task.wait(0.1)
         startStrafe()
     end
 end)
 
--- tuff
+y = y + 35
+mainFrame.Size = UDim2.new(0, 300, 0, y + 10)
 
-runService.Heartbeat:Connect(function()
-    updateAimbot()
-    updateESP()
-end)
+local particles = Instance.new("Frame")
+particles.Size = UDim2.new(1, 0, 1, 0)
+particles.BackgroundTransparency = 1
+particles.Parent = mainFrame
+
+for i = 1, 20 do
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 2, 0, 2)
+    dot.Position = UDim2.new(math.random(), 0, math.random(), 0)
+    dot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    dot.BackgroundTransparency = 0.7
+    dot.BorderSizePixel = 0
+    dot.Parent = particles
+    local cornerDot = Instance.new("UICorner")
+    cornerDot.CornerRadius = UDim.new(1, 0)
+    cornerDot.Parent = dot
+
+    game:GetService("RunService").Heartbeat:Connect(function()
+        local pos = dot.Position
+        local x = pos.X.Scale + 0.001 * math.sin(os.clock() + i)
+        local y = pos.Y.Scale + 0.001 * math.cos(os.clock() + i * 1.3)
+        dot.Position = UDim2.new(x % 1, 0, y % 1, 0)
+    end)
+end
 
 userInputService.InputBegan:Connect(function(input)
-    if input.KeyCode == Enum.KeyCode.Insert then
+    if input.KeyCode == Enum.KeyCode.RightAlt and isInjected then
         mainFrame.Visible = not mainFrame.Visible
         if mainFrame.Visible then
-            mainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
+            mainFrame.Position = UDim2.new(0.5, -150, 0.5, -(mainFrame.Size.Y.Offset / 2))
         end
     end
 end)
 
 player.CharacterAdded:Connect(function()
     task.wait(0.5)
-    if settings.StrafeEnabled then
+    if settings.Enabled and isInjected then
         startStrafe()
     end
 end)
+
+player:GetPropertyChangedSignal("Character"):Connect(function()
+    if not player.Character and isInjected then
+        stopStrafe()
+    end
+end)
+
+print("Target Strafe загружен! Нажмите RightAlt для открытия.")
+
+-- Made By DeepSeek
