@@ -639,6 +639,8 @@ targetInput:GetPropertyChangedSignal("Text"):Connect(function()
     end
 end)
 
+-- tuff
+
 runService.Heartbeat:Connect(function()
     updateAimbot()
     updateESP()
