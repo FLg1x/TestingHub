@@ -4,6 +4,8 @@ local camera = workspace.CurrentCamera
 local runService = game:GetService("RunService")
 local userInputService = game:GetService("UserInputService")
 
+-- tuff
+
 local settings = {
     AimbotEnabled = false,
     SilentAim = false,
